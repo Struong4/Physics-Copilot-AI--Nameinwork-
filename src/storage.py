@@ -6,6 +6,7 @@ from pathlib import Path
 # runs sqlite in the root of the current working directory
 ROOT = Path.cwd()
 DB_PATH = ROOT / "db" / "runs.sqlite"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # my db file exists so do not need this line, but if running off fresh state will create directory
 # DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -18,10 +19,12 @@ def get_connection():
     # Table for the metadata of each simulation run
     # creates a run table that logs the id that automaticaly increments
     # shows the run tag in the algo param json, and the date it was crated
+    # adding a new section for caching the data
     conn.execute("""
         CREATE TABLE IF NOT EXISTS runs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_tag TEXT NOT NULL,
+            config_json TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -48,13 +51,26 @@ def get_connection():
 
     return conn
 
-def create_run(run_tag):
+def find_run_by_config(config_dict):
+    # the parameter added would be the params.json file, and will go through the
+    # config_json table and if a previous file matches, it will just run the same config
+    # by memory to save time, if not itll just run as normal
+    config_json = json.dumps(config_dict, sort_keys=True)
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM runs WHERE config_json = ? LIMIT 1", (config_json,)).fetchone()
+    if row is None:
+        return None
+    return row[0]
+    
+
+def create_run(run_tag, config_dict):
     # after each simulation, stores that specfic simulation into 
     # a table with each existing simulation for memory
     # makes sure connection is properly committed like a HTTP OK 
     # and inserts a new row for the speicfic run in the runs table
+    config_json = json.dumps(config_dict, sort_keys=True)
     with get_connection() as conn:
-        cur = conn.execute("INSERT INTO runs(run_tag) VALUES (?)", (run_tag,))
+        cur = conn.execute("INSERT INTO runs(run_tag, config_json) VALUES (?, ?)", (run_tag, config_json))
         return cur.lastrowid
 
 def insert_result(run_id, step, x, y, vx, vy):
