@@ -1,5 +1,6 @@
 import sqlite3 # built in library for pythons databases
 import json
+import hashlib
 from pathlib import Path
 
 # run code like this python src/main.py in the big folder
@@ -25,6 +26,7 @@ def get_connection():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_tag TEXT NOT NULL,
             config_json TEXT,
+            config_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -48,29 +50,57 @@ def get_connection():
     # Useful indexes for faster lookups that help when looking up specific run occurance
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_tag ON runs(run_tag)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_results_run_step ON results(run_id, step)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_config_hash ON runs(config_hash)")
 
     return conn
+
+# helper function that will help create the indexes of the config files
+def config_to_hash(config_dict: dict) -> tuple[str, str]:
+    config_json = json.dumps(config_dict, sort_keys=True)
+
+    # decided to use sha256 hash function from the hash library to 
+    # give a unique fingerprint to an exact config file from reading the 
+    # config as a string (and encodes so algo can read) to make looking up 
+    # the index for the config instead of running through the entire database.
+    config_hash = hashlib.sha256(config_json.encode("utf-8")).hexdigest()
+    return config_json, config_hash
 
 def find_run_by_config(config_dict):
     # the parameter added would be the params.json file, and will go through the
     # config_json table and if a previous file matches, it will just run the same config
     # by memory to save time, if not itll just run as normal
+    """
     config_json = json.dumps(config_dict, sort_keys=True)
     with get_connection() as conn:
         row = conn.execute("SELECT id FROM runs WHERE config_json = ? LIMIT 1", (config_json,)).fetchone()
     if row is None:
         return None
     return row[0]
+
+    this is currently the old look up that searches the entire database,
+    would take too long so now we implement the hashed indexing for the lookup
+    """
+    config_json, config_hash = config_to_hash(config_dict)
+    # looks into the database and tries to find a match between the current config
+    # and its same index from the hashing function to see if it matches previous configs
+    with get_connection() as conn:
+        row = conn.execute("SELECT id, config_json FROM runs WHERE config_hash = ? LIMIT 5", (config_hash,)).fetchone()
+    if row is None:
+        return None
     
+    # if the configs match, return the run
+    run_id, stored_json = row 
+    if stored_json == config_json:
+        return run_id
+    return None
 
 def create_run(run_tag, config_dict):
     # after each simulation, stores that specfic simulation into 
     # a table with each existing simulation for memory
-    # makes sure connection is properly committed like a HTTP OK 
-    # and inserts a new row for the speicfic run in the runs table
-    config_json = json.dumps(config_dict, sort_keys=True)
+    # stores the run and the hash of the config for easy lookup
+    config_json, config_hash = config_to_hash(config_dict)
     with get_connection() as conn:
-        cur = conn.execute("INSERT INTO runs(run_tag, config_json) VALUES (?, ?)", (run_tag, config_json))
+        cur = conn.execute("INSERT INTO runs(run_tag, config_json, config_hash) VALUES (?, ?, ?)", (run_tag, config_json, config_hash))
         return cur.lastrowid
 
 def insert_result(run_id, step, x, y, vx, vy):
